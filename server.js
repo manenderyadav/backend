@@ -4,7 +4,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const socketIo = require("socket.io");
 const connectDB = require("./config/db"); // Your existing MongoDB connection
-
+require('dotenv').config();
 // Import Firebase Admin SDK
 const admin = require("firebase-admin");
 
