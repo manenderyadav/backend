@@ -4,7 +4,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const socketIo = require("socket.io");
 const connectDB = require("./config/db"); // Your existing MongoDB connection
-require('dotenv').config();
+
 // Import Firebase Admin SDK
 const admin = require("firebase-admin");
 
@@ -28,14 +28,14 @@ app.use("/api/auth", require("./routes/auth"));
 // ===========================================
 // Initialize Firebase Admin SDK for Firestore
 // ===========================================
-// Ensure FIREBASE_SERVICE_ACCOUNT_KEY is set as an environment variable
-// on Render with the content of your Firebase service account JSON file.
+let db; // Declare db outside to be accessible globally
 try {
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
+  db = admin.firestore(); // Assign Firestore instance to db
   console.log("Firebase Admin SDK initialized successfully.");
 } catch (error) {
   console.error("Failed to initialize Firebase Admin SDK:", error);
@@ -43,8 +43,7 @@ try {
   // In a production app, you might want a more robust error handling/exit strategy.
 }
 
-const db = admin.firestore(); // Get a reference to the Firestore database
-const chatMessagesRef = db.collection('chatMessages'); // Reference to your chat messages collection
+const chatMessagesRef = db ? db.collection('chatMessages') : null; // Reference to your chat messages collection
 
 // ===========================================
 // Socket.IO Logic for Chat and Active Users
@@ -72,8 +71,11 @@ io.on("connection", async (socket) => {
 
   // When a client sends a chat message
   socket.on("chatMessage", async ({ sender, message }) => {
-    console.log(`Message from ${sender}: ${message}`);
-    // Save message to Firestore
+    if (!chatMessagesRef) {
+      console.error("Firestore DB not initialized. Cannot save message.");
+      return;
+    }
+    console.log(`Attempting to save message from ${sender}: ${message}`);
     try {
       const newMessage = {
         sender: sender,
@@ -111,9 +113,26 @@ io.on("connection", async (socket) => {
   });
 
   // ===========================================
-  // Fetch and send historical messages to new client
+  // Ensure collection exists and fetch historical messages for new client
   // ===========================================
+  if (!chatMessagesRef) {
+    console.error("Firestore DB not initialized. Cannot fetch historical messages.");
+    return;
+  }
+
   try {
+    // Check if the collection is empty first
+    const firstDocSnapshot = await chatMessagesRef.limit(1).get();
+    if (firstDocSnapshot.empty) {
+      console.log("chatMessages collection is empty. Adding a welcome message.");
+      await chatMessagesRef.add({
+        sender: "Admin",
+        message: "Welcome to the chat! This is the first message.",
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
+      console.log("Welcome message added.");
+    }
+
     const snapshot = await chatMessagesRef
       .orderBy('timestamp', 'desc') // Order by timestamp in descending order
       .limit(20) // Limit to the last 20 messages
@@ -122,12 +141,14 @@ io.on("connection", async (socket) => {
     const historicalMessages = [];
     snapshot.forEach(doc => {
       const data = doc.data();
-      historicalMessages.push({
-        sender: data.sender,
-        message: data.message,
-        // Frontend will sort by timestamp if needed, but for display order, just push
-        // You might want to format timestamp here or on frontend if displaying it
-      });
+      // Ensure data has sender and message properties
+      if (data.sender && data.message) {
+        historicalMessages.push({
+          sender: data.sender,
+          message: data.message,
+          // You might want to include timestamp here if you plan to display it or sort on frontend
+        });
+      }
     });
 
     // Reverse the array to get messages in chronological order (oldest first)
@@ -139,6 +160,8 @@ io.on("connection", async (socket) => {
 
   } catch (error) {
     console.error("Error fetching historical messages from Firestore:", error);
+    // Log the full error object for more details
+    console.error("Firestore error details:", error.code, error.details, error.metadata);
   }
 
   // Send the current list of active users to the newly connected client
